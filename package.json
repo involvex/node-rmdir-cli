@@ -1,6 +1,6 @@
 {
-  "name": "rmdir-cli",
-  "version": "2.0.6",
+  "name": "@involvex/rmdir-cli",
+  "version": "2.0.7",
   "description": "rmdir-cli is cross-platform command to recursively delete directories",
   "keywords": [
     "rmdir",
@@ -9,28 +9,39 @@
     "cli",
     "rmdir-cli"
   ],
+  "type": "commonjs",
   "main": "index.js",
   "scripts": {
-    "test": "node index.js test"
+    "test": "node index.js test",
+    "lint": "eslint . -c eslint.config.mjs --ext .js",
+    "lint:fix": "eslint . -c eslint.config.mjs --ext .js --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "bin": {
-    "rmdir-cli": "./bin/rmdir-cli.js"
+    "rmdir": "./bin/rmdir-cli.js"
   },
-  "author": "direct808",
+  "author": "involvex",
   "license": "ISC",
   "dependencies": {
-    "@justinc/dir-exists": "^2.0.2"
+    "@justinc/dir-exists": "^2.0.2",
+    "eslint": "^9.39.2",
+    "prettier": "^3.7.4"
   },
-  "devDependencies": {},
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@eslint/json": "^0.14.0",
+    "globals": "^16.5.0"
+  },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/direct808/node-rmdir-cli.git"
+    "url": "git+https://github.com/involvex/node-rmdir-cli.git"
   },
-  "engines":      {
-    "node":       ">=0.4.0"
+  "engines": {
+    "node": ">=0.4.0"
   },
   "bugs": {
-    "url": "https://github.com/direct808/node-rmdir-cli/issues"
+    "url": "https://github.com/involvex/node-rmdir-cli/issues"
   },
-  "homepage": "https://github.com/direct808/node-rmdir-cli#readme"
+  "homepage": "https://github.com/involvex/node-rmdir-cli#readme"
 }

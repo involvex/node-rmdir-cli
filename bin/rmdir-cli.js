@@ -12,6 +12,7 @@ function parseArgs() {
   var options = {
     force: false,
     yes: false,
+    brutal: false,
     help: false,
     version: false,
     directories: [],
@@ -26,6 +27,8 @@ function parseArgs() {
       options.version = true;
     } else if (arg === "--force" || arg === "-f") {
       options.force = true;
+    } else if (arg === "--brutal" || arg === "-b") {
+      options.brutal = true;
     } else if (arg === "--yes" || arg === "-y") {
       options.yes = true;
     } else if (arg.startsWith("-")) {
@@ -51,6 +54,9 @@ function showUsage() {
     "  -f, --force    enable recursive deletion of non-empty directories",
   );
   console.log(
+    "  -b, --brutal   kill running processes in directory before deletion",
+  );
+  console.log(
     "  -y, --yes      skip confirmation prompts (non-interactive mode)",
   );
   console.log("");
@@ -58,6 +64,9 @@ function showUsage() {
   console.log("  rmdir mydir                    # Delete empty directory");
   console.log(
     "  rmdir --force mydir           # Delete non-empty directory with confirmation",
+  );
+  console.log(
+    "  rmdir --brutal mydir          # Kill processes and delete directory with confirmation",
   );
   console.log(
     "  rmdir --force --yes mydir     # Delete non-empty directory without confirmation",
@@ -135,6 +144,137 @@ function getDirectorySize(dirpath) {
   return { size: totalSize, files: totalFiles };
 }
 
+// Get processes using files in directory
+function getProcessesUsingDirectory(dirpath) {
+  return new Promise(function (resolve) {
+    var processes = [];
+    
+    try {
+      var os = require("os");
+      var child_process = require("child_process");
+      
+      if (os.platform() === "win32") {
+        // Windows: use handle.exe or tasklist with open files
+        try {
+          var result = child_process.execSync(
+            'handle.exe "' + dirpath + '" 2>nul || echo "handle.exe not found"',
+            { encoding: "utf8", timeout: 5000 }
+          );
+          
+          if (!result.includes("handle.exe not found")) {
+            // Parse handle.exe output
+            var lines = result.split("\n");
+            lines.forEach(function (line) {
+              if (line.includes("pid:")) {
+                var match = line.match(/pid:\s*(\d+)/);
+                if (match) {
+                  processes.push({
+                    pid: parseInt(match[1]),
+                    name: "Unknown"
+                  });
+                }
+              }
+            });
+          }
+        } catch (ignoreErr) { // eslint-disable-line no-unused-vars
+          // Fallback to tasklist approach
+          try {
+            var tasklistResult = child_process.execSync(
+              'tasklist /V /FO CSV | findstr /I "' + dirpath + '"',
+              { encoding: "utf8", timeout: 5000 }
+            );
+            
+            if (tasklistResult.trim()) {
+              var tasklistLines = tasklistResult.split("\n");
+              tasklistLines.forEach(function (line) {
+                var parts = line.split(",");
+                if (parts.length >= 2) {
+                  var name = parts[0].replace(/"/g, "");
+                  var pid = parseInt(parts[1].replace(/"/g, ""));
+                  processes.push({ pid: pid, name: name });
+                }
+              });
+            }
+          } catch (ignoreErr2) { // eslint-disable-line no-unused-vars
+            // Ignore errors
+          }
+        }
+      } else {
+        // Unix-like systems: use lsof
+        try {
+          var lsofResult = child_process.execSync(
+            'lsof +D "' + dirpath + '" 2>/dev/null || true',
+            { encoding: "utf8", timeout: 5000 }
+          );
+          
+          if (lsofResult.trim()) {
+            var lsofLines = lsofResult.split("\n");
+            lsofLines.forEach(function (line) {
+              var parts = line.split(/\s+/);
+              if (parts.length >= 2 && !isNaN(parseInt(parts[1]))) {
+                processes.push({
+                  pid: parseInt(parts[1]),
+                  name: parts[0]
+                });
+              }
+            });
+          }
+        } catch (ignoreErr3) { // eslint-disable-line no-unused-vars
+          // Ignore errors
+        }
+      }
+    } catch (ignoreErr4) { // eslint-disable-line no-unused-vars
+      // Ignore all errors and return empty array
+    }
+    
+    // Remove duplicates
+    var uniqueProcesses = [];
+    var seenPids = new Set();
+    
+    processes.forEach(function (proc) {
+      if (!seenPids.has(proc.pid)) {
+        seenPids.add(proc.pid);
+        uniqueProcesses.push(proc);
+      }
+    });
+    
+    resolve(uniqueProcesses);
+  });
+}
+
+// Kill processes using directory
+function killProcesses(processes) {
+  return new Promise(function (resolve, reject) {
+    var killed = [];
+    var failed = [];
+    
+    var os = require("os");
+    var child_process = require("child_process");
+    
+    processes.forEach(function (proc) {
+      try {
+        if (os.platform() === "win32") {
+          child_process.execSync('taskkill /PID ' + proc.pid + ' /F', { timeout: 3000 });
+        } else {
+          child_process.execSync('kill -9 ' + proc.pid, { timeout: 3000 });
+        }
+        killed.push(proc);
+      } catch (killErr) {
+        failed.push({ process: proc, error: killErr.message });
+      }
+    });
+    
+    if (failed.length > 0) {
+      reject({
+        killed: killed,
+        failed: failed
+      });
+    } else {
+      resolve(killed);
+    }
+  });
+}
+
 // Confirm deletion with user
 function confirmDeletion(dirpath, options) {
   if (options.yes) {
@@ -155,20 +295,37 @@ function confirmDeletion(dirpath, options) {
     console.log(
       "Directory contains: " + sizeInfo.files + " files, " + sizeMB + " MB",
     );
-    console.log("");
-
-    rl.question(
-      "Are you sure you want to delete this directory? [y/N]: ",
-      function (answer) {
-        rl.close();
-        var confirmed =
-          answer.toLowerCase() === "y" || answer.toLowerCase() === "yes";
-        if (!confirmed) {
-          console.log("Operation cancelled.");
-        }
-        resolve(confirmed);
-      },
-    );
+    
+    if (options.brutal) {
+      console.log("Brutal mode enabled: Running processes will be killed");
+      console.log("");
+      rl.question(
+        "Are you sure you want to delete this directory and kill running processes? [y/N]: ",
+        function (answer) {
+          rl.close();
+          var confirmed =
+            answer.toLowerCase() === "y" || answer.toLowerCase() === "yes";
+          if (!confirmed) {
+            console.log("Operation cancelled.");
+          }
+          resolve(confirmed);
+        },
+      );
+    } else {
+      console.log("");
+      rl.question(
+        "Are you sure you want to delete this directory? [y/N]: ",
+        function (answer) {
+          rl.close();
+          var confirmed =
+            answer.toLowerCase() === "y" || answer.toLowerCase() === "yes";
+          if (!confirmed) {
+            console.log("Operation cancelled.");
+          }
+          resolve(confirmed);
+        },
+      );
+    }
   });
 }
 
@@ -182,9 +339,9 @@ function rmdirWithConfirmation(dirpath, options) {
 
     var isEmpty = isDirectoryEmpty(dirpath);
 
-    if (!isEmpty && !options.force) {
+    if (!isEmpty && !options.force && !options.brutal) {
       console.error("Error: Directory '" + dirpath + "' is not empty.");
-      console.error("Use --force to delete non-empty directories.");
+      console.error("Use --force or --brutal to delete non-empty directories.");
       reject(new Error("Directory not empty"));
       return;
     }
@@ -197,6 +354,50 @@ function rmdirWithConfirmation(dirpath, options) {
             return;
           }
 
+          // Handle brutal mode - kill processes first
+          if (options.brutal) {
+            console.log("Checking for running processes in directory...");
+            return getProcessesUsingDirectory(dirpath)
+              .then(function (processes) {
+                if (processes.length > 0) {
+                  console.log("Found " + processes.length + " running process(es):");
+                  processes.forEach(function (proc) {
+                    console.log("  PID " + proc.pid + ": " + proc.name);
+                  });
+                  
+                  console.log("Attempting to kill processes...");
+                  return killProcesses(processes)
+                    .then(function (killed) {
+                      console.log("Successfully killed " + killed.length + " process(es)");
+                      return true;
+                    })
+                    .catch(function (killResult) {
+                      console.log("Warning: Could not kill all processes");
+                      if (killResult.killed.length > 0) {
+                        console.log("  Successfully killed: " + killResult.killed.length + " process(es)");
+                      }
+                      if (killResult.failed.length > 0) {
+                        console.log("  Failed to kill: " + killResult.failed.length + " process(es)");
+                        killResult.failed.forEach(function (failed) {
+                          console.log("    PID " + failed.process.pid + ": " + failed.error);
+                        });
+                      }
+                      return true; // Continue with deletion anyway
+                    });
+                } else {
+                  console.log("No running processes found in directory");
+                  return true;
+                }
+              })
+              .catch(function (procErr) {
+                console.log("Warning: Could not check for running processes: " + procErr.message);
+                return true; // Continue with deletion anyway
+              });
+          } else {
+            return Promise.resolve(true);
+          }
+        })
+        .then(function () {
           console.log("Deleting directory: " + dirpath);
           try {
             rmdir(dirpath);

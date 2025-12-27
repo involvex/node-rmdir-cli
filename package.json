@@ -1,6 +1,6 @@
 {
   "name": "@involvex/rmdir-cli",
-  "version": "2.0.7",
+  "version": "2.0.8",
   "description": "rmdir-cli is cross-platform command to recursively delete directories",
   "keywords": [
     "rmdir",
